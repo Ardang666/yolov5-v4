@@ -26,6 +26,8 @@ class Detect(nn.Module):
 
     def __init__(self, nc=80, anchors=(), ch=()):  # detection layer
         super(Detect, self).__init__()
+        self.anchors_list = list(np.array(anchors).flatten())
+        self.num_anchors = len(self.anchors_list)
         self.nc = nc  # number of classes
         self.no = nc + 5  # number of outputs per anchor
         self.nl = len(anchors)  # number of detection layers
@@ -36,10 +38,32 @@ class Detect(nn.Module):
         self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
 
+        #self.tmp_shape=[[1,255,80,64],[1,255,40,32],[1,255,20,16]]
+        self.img_h = 384
+        self.img_w = 640
+        self.conf_thres = 0.25
+        self.iou_thres = 0.45
+        self.maxBoxNum = 1024
+
     def forward(self, x):
         # x = x.copy()  # for profiling
         z = []  # inference output
+        output = []
+
         self.training |= self.export
+        if x[0].device.type == 'mlu':
+            for i in range(self.nl):
+                x[i] = self.m[i](x[i])  # conv
+                y = x[i].sigmoid()
+                # print('y.shape: ',y.shape)
+                output.append(y)
+
+            detect_out = torch.ops.torch_mlu.yolov5_detection_output(output[0], output[1], output[2],
+                              self.anchors_list,self.nc, self.num_anchors,
+                              self.img_h, self.img_w, self.conf_thres, self.iou_thres, self.maxBoxNum)
+                            #  [10, 13, 16, 30, 33, 23,30, 61, 62, 45, 59, 119, 116, 90, 156, 198, 373, 326]
+            return detect_out
+
         for i in range(self.nl):
             x[i] = self.m[i](x[i])  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
